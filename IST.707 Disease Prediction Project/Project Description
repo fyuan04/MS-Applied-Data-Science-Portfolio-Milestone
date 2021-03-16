@@ -1,4 +1,4 @@
-This project uses decision tree classicifation, logistic regression and artificial neural network / deep learning algorithms <br>
-to classify and predict if a person have a certain type of disease based on some health statistics as predicting variables,  <br>
-such as age, weight, height, blood pressure, etc. <br>
+This project uses decision tree classicifation, logistic regression and artificial neural network / deep learning algorithms 
+to classify and predict if a person have a certain type of disease based on some health statistics as predicting variables,  
+such as age, weight, height, blood pressure, etc. 
 Please note that the project code is in R markdown, make sure you have R and RStudio installed before running the code.

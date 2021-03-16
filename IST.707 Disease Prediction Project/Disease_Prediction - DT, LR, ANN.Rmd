@@ -1,0 +1,461 @@
+---
+title: "Disease Prediction with DT, LR, and ANN"
+author: "Fangzhou Yuan"
+date: "2020/4/26"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(dplyr)
+library(tidyverse)
+library(corrplot)
+library(plyr)
+library(ggplot2)
+library(gridExtra)
+library(caret)
+library(gbm)
+library(pROC)
+library(clue)
+library(class)
+library(DescTools)
+library(keras)
+library(recipes)
+library(yardstick)
+library(rpart)
+library(rattle)
+
+```
+
+**Introduction**
+This assignment uses decision tree classicifation, logistic regression and artificial neural network / deep learning algorithms to classify and predict if a person have a certain type of disease based on some health statistics as predicting variables, such as age, weight, height, blood pressure, etc. The name of the disease or anyother specific symptomatic information is given, so that domain knowledge and nalysis on predicting variables are the only reference for the designer to build and improve the models.
+From the EDA, I extracted some useful information from the given dataset and made some assumptions that may help in model building. Then, later in the machine larning models part, I built several models and fine tuned them. The way I evaluate different models involded in this assignment is by looking at accuracy, kappa values, and area under the curve. Also, we can compare the specificity, which is important in diseas diagnosis. An in detailed comparison and model selection will be expalined in the conclusion section. Lastly, I can apply the models on the test dataset and output the predictions to a file.
+
+
+**Analysis**
+read in data
+```{r}
+raw_tdf <- read_csv(file = "Disease Prediction Training(1).csv")
+#make a NA table
+NA_table <- sort(sapply(raw_tdf, function(x) sum(is.na(x))))
+sum(NA_table)
+#no NA found
+```
+
+change column names for simplicity
+```{r}
+colnames(raw_tdf)[5] <- "HPressure"
+colnames(raw_tdf)[6] <- "LPressure"
+```
+
+use max & min to see if there exists outliers
+```{r}
+summary(raw_tdf)
+```
+suspicous columns based on units of metadata: weight, hpressure, lpressure
+
+winsorize the data to get rid of the extreme values
+```{r}
+tdf <- raw_tdf
+tdf$HPressure <- Winsorize(tdf$HPressure, probs = c(0.02,0.98))
+tdf$LPressure <- Winsorize(tdf$LPressure, probs = c(0.02,0.98))
+tdf$Height <- Winsorize(tdf$Height, probs = c(0.005,0.995))
+tdf$Weight <- Winsorize(tdf$Weight, probs = c(0.005,0.995))
+```
+
+check if there exists any rows with low pressure >= hgih pressure
+```{r}
+sum(tdf$HPressure <= tdf$LPressure)
+#filter out these rows since it is technically impossible for humans under normal conditions
+tdf <- filter(tdf,LPressure < HPressure)
+#remove duplicate rows if there is any
+tdf <- unique(tdf)
+```
+
+**EDA**
+Correlation matrix
+```{r}
+#convert character columns to dummy variables
+tempdf <- tdf
+tempdf$Gender <- as.numeric(revalue(tempdf$Gender,c(female = 0, male = 1)))
+tempdf$Cholesterol <- as.numeric(revalue(tempdf$Cholesterol, c(normal = 0, high = 1, 'too high' = 2)))
+tempdf$Glucose <- as.numeric(revalue(tempdf$Glucose, c(normal = 0, high = 1, 'too high' = 2)))
+#create correlation matrix
+tcor <- cor(tempdf,method = "pearson")
+corrplot(tcor,type = "upper")
+```
+from the correlation matrix, we can tell that HPressure is highly positively correlated to LPressue, meaning large higher bound (systolic pressure) always
+coexist with large low bound (diaslotic pressure). By enumerating the result of disease as 1 for having disease, from the correlation matrix, we can see 
+there is no single attribute taht is highly linearly correlated with having/not having the disease. But higher values of HPressure, LPressure, Age, Weight 
+Cholesterol, and Glucose lead to hgiher probability of getting the disease. So We will foucus on these columns on further analysis. 
+
+**visulizations**
+```{r echo=FALSE}
+tempdf <- tdf
+tempdf$BMI=tempdf$Weight/((tempdf$Height)*0.01)^2
+BMI_plot <- ggplot(tempdf)+geom_boxplot(aes(x=Gender, y=BMI, color=as.factor(Disease)),outlier.shape = NA) +
+    coord_cartesian(ylim = c(10,50))
+BMI_plot
+```
+we can dirive the Body Mass Index value (BMI) which is a simple and good obesity identifier calculated using height and weight
+BMI formula: BMI = weight(kg)/height^2 (m)
+From the plot, we can observe that for both male and female the group of people with the disease have higher BMI values than people in the normal BMI range
+(20-30). Thus, if weight and hieght attributes do not work as good classifiers in models built, I may consider replacing these two attributes with the BMI,
+as it is a more informative way of relating the original data with health status analysis 
+
+scatter plot of high and low pressure
+```{r echo=FALSE}
+pressure_plot <- ggplot(tdf,aes(x=HPressure,y=LPressure))+geom_point(aes(color=as.factor(Disease)))
+Pressure_diff = tdf$HPressure-tdf$LPressure
+pressure_diff_plot <- ggplot(tdf,aes(Pressure_diff))+geom_density(aes(fill=factor(Disease)), alpha = 0.7)
+grid.arrange(pressure_plot,pressure_diff_plot,ncol=2)
+```
+The scatter plot shows the distribution of the disease by values of HPressure and LPressue. It is obvious that the majority of the top right part with large 
+values of both HPressure and LPressure belongs to disease=YES. While the bottome left cornor of the plot which are the data points of small values of HPressure
+and LPressure have mostly disease=0. The range of HPressure and LPressue shows the smaller the blood pressure difference, the less likely a person is diagnosed 
+as the disease. Thus, we can conclude the disease we are analyzing here is associated with high blood pressue problem, In addition our 
+conclusion here is consistent with the previous plot, since overweight has consistently been associated with an increase risk for high blood pressure and metabolic
+diseases.
+
+barplots of cholesterol vs disease and glucose vs disease
+```{r echo=FALSE}
+chole_plot <- ggplot(tdf)+geom_bar(aes(x=Cholesterol,fill=factor(Disease)),position = "fill")
+glu_plot <- ggplot(tdf)+geom_bar(aes(x=Glucose,fill=factor(Disease)),position = "fill")
+grid.arrange(chole_plot,glu_plot,ncol=2)
+```
+According to the plots, data points with higher level of cholesterol have greater chance of getting the disease, and the trend is more noticable in the cholesterol
+plot. But in general, these two factor are not very good classifiers because the entropy of the binary distribution of disease stay high in all levels of glucose and 
+cholesterol
+
+**logistic regresion**
+```{r}
+#data preprocessing
+cat_cols = c('Gender','Cholesterol','Glucose','Smoke','Alcohol','Exercise','Disease')
+logdf <- tdf
+logdf[cat_cols] <- lapply(tdf[cat_cols], as.factor)
+
+#run the model
+set.seed(111)
+log_train_ind <- createDataPartition(logdf$Disease, p=0.8, list=FALSE)
+log_train <- logdf[log_train_ind,]
+log_val <- logdf[-log_train_ind,]
+
+log_model <- train(Disease ~ ., data = log_train, method = "glm", family = "binomial")
+varImp(log_model)
+log_pred <- predict(log_model, newdata = log_val)
+confusionMatrix(log_pred,log_val$Disease)
+
+```
+The variable importance table generated from the regression indicates that the HPressure and Age attribtues are the most important variables, which is consistent with our conclusion drawn from the EDA. Then looking at the onfusion matrix, the accuracy is 0.734 and kappa is 0.468. The performance is roughly the same with other models built in hw3. Since we are trying to diagnose a disease here, the specificity should not be ignored. The specificity is 0.6926.
+
+Logistic Regression Roc and Auc
+```{r echo=FALSE}
+log_pred_prob <- predict(log_model,newdata = log_val,type = "prob")
+log_roc_curve <- roc(log_val$Disease,log_pred_prob$`1`)
+plot(log_roc_curve)
+auc(log_roc_curve)
+```
+
+**ANN/DL**
+```{r}
+#data preprocessing
+ann_train <- log_train
+ann_val <- log_val
+
+#standardize numeric attributes and make dummy variables for categorical attributes
+rec_obj <- recipe(Disease ~ ., data = logdf) %>%
+  step_log(all_numeric()) %>%
+  step_dummy(all_nominal(),-all_outcomes()) %>%
+  step_center(all_predictors(),-all_outcomes()) %>%
+  step_scale(all_predictors(),-all_outcomes()) %>%
+  prep(data = ann_train)
+
+#apply to train&validation data
+x_train <- bake(rec_obj, new_data = ann_train) %>% select(-Disease)
+x_val <- bake(rec_obj, new_data = ann_val) %>% select(-Disease)
+y_train <- as.numeric(as.character(ann_train$Disease))
+y_val <- as.numeric(as.character(ann_val$Disease))
+
+```
+
+build model
+```{r message=FALSE, include=FALSE}
+#ann with 0 hidden layer
+ann0 <- keras_model_sequential()
+#final model with parameters
+ann0 %>%
+  #1st layer
+  layer_dense(units = 12,
+              kernel_initializer = "uniform",
+              activation = "relu",
+              input_shape = ncol(x_train)) %>%
+  #dropout
+  layer_dropout(rate = 0.1)%>%
+  #out layer
+  layer_dense(units = 1,
+              kernel_initializer = 'uniform',
+              activation = "sigmoid") %>%
+  #compile
+  compile(optimizer = "adam",
+          loss = "binary_crossentropy",
+          metrics = c("accuracy"))
+
+history <- fit(object = ann0, x = as.matrix(x_train), y = y_train, batch_size = 50, epochs = 20, validation_split = 0.2)
+```
+
+```{r}
+plot(history)
+```
+The ANN with zero hidden layer includes an input layer and an ouput layer only. In the input layer, the # of units is set to be 12, which is selected by manual hyperparameter tuning based on model performance. The initializer function as uniform is selected among several commonly used initializer functions provided by Keras, such as "RandomNormal", "RandomUniform", "identity", etc. The activation function of the input layer as "relu" is also produced by comparing the model performance with different activation functions such as "tanh", "linear", and "selu". The input_shape is basically the number of predictors. The dropout layer is used to control overfitting. The rate = 0.1 can help remove the weights below 10%. The output layer has only one unit, because it is a binary categorical variable. Then the initializer = "uniform", and "activation" function = "sigmoid", which are common for binary classification. Similarly, the loss function within the compile function is set to be "binary_crossentriopy". The optimizer is selected by manual hyperparameter tuning as well. Lastly, I set "accuracy" as the metrics to evaluate the training results.
+The plot of the training history here is for batch_size and epochs tuning. The batch_size is set to be high so that the error within each training cycle is reduced. The epochs was also set to be high initially, so that we can tell from the plot that the loss/accuracy begins to flatten at around 10. I tried different validation splits, and found 0.2 leads to the best model performance.
+
+making predictions
+```{r}
+y_pred_class <- predict_classes(object = ann0, x = as.matrix(x_val)) %>%
+  as.vector
+y_pred_prob <- predict_proba(object = ann0, x = as.matrix(x_val)) %>%
+  as.vector
+```
+evaluate the model
+```{r}
+keras_tbl <- tibble(truth = as.factor(y_val),
+                     estimate = as.factor(y_pred_class),
+                     class_prob = y_pred_prob)
+
+options(yardstick.event_first = FALSE)
+#confusion matrix
+keras_tbl %>% conf_mat(truth,estimate)
+#accuracy
+keras_tbl %>% metrics(truth,estimate)
+#AUC
+keras_tbl %>% roc_auc(truth,class_prob)
+#ROC
+keras_tbl %>% roc(truth,class_prob) %>% plot()
+#Precision and Recall
+keras_tbl %>% precision(truth,estimate)
+keras_tbl %>% recall(truth,estimate)
+```
+The accuracy, kappa, recall, and auc are all higher than what we got from the logistic regression. 
+
+**repeat the process for ann with 1 hidden layer**
+```{r include=FALSE}
+ann1 <- keras_model_sequential()
+#final model with parameters
+ann1 %>%
+  #1st layer
+  layer_dense(units = 12,
+              kernel_initializer = "uniform",
+              activation = "relu",
+              input_shape = ncol(x_train)) %>%
+  #2nd layer
+  layer_dense(units = 12,
+              kernel_initializer = "uniform",
+              activation = "relu")%>%
+  #dropout
+  layer_dropout(rate = 0.1)%>%
+  #out layer
+  layer_dense(units = 1,
+              kernel_initializer = 'uniform',
+              activation = "sigmoid") %>%
+  #compile
+  compile(optimizer = "adam",
+          loss = "binary_crossentropy",
+          metrics = c("accuracy"))
+
+history_1 <- fit(object = ann1, x = as.matrix(x_train), y = y_train, batch_size = 50, epochs = 15, validation_split = 0.2)
+```
+The hyperparameter tuning process is very similar with what I explained in ANN-0, except we have a hidden layer here
+
+```{r}
+plot(history_1)
+```
+The batch_size = 50, and epochs = 30 were used initially, and at epoch = 15, the loss/accuracy begin to decrease and converge. 
+
+making predictions and model evaluation
+```{r}
+y_pred_class_1 <- predict_classes(object = ann1, x = as.matrix(x_val)) %>%
+  as.vector
+y_pred_prob_1 <- predict_proba(object = ann1, x = as.matrix(x_val)) %>%
+  as.vector
+keras_tbl_1 <- tibble(truth = as.factor(y_val),
+                    estimate = as.factor(y_pred_class_1),
+                    class_prob = y_pred_prob_1)
+
+options(yardstick.event_first = FALSE)
+#confusion matrix
+keras_tbl_1 %>% conf_mat(truth,estimate)
+#accuracy
+keras_tbl_1 %>% metrics(truth,estimate)
+#AUC
+keras_tbl_1 %>% roc_auc(truth,class_prob)
+#ROC
+keras_tbl_1 %>% roc(truth,class_prob) %>% plot()
+#Precision and Recall
+keras_tbl_1 %>% precision(truth,estimate)
+keras_tbl_1 %>% recall(truth,estimate)
+```
+accuracy, kappa , auc, and recall are higher than the results from ANN0, but only to a very limited scale
+
+**repeat the process for ann with 2 hidden layer**
+```{r include=FALSE}
+ann2 <- keras_model_sequential()
+#final model with parameters
+ann2 %>%
+  #1st layer
+  layer_dense(units = 5,
+              kernel_initializer = "uniform",
+              activation = "relu",
+              input_shape = ncol(x_train)) %>%
+  #2nd layer
+  layer_dense(units = 15,
+              kernel_initializer = "uniform",
+              activation = "relu")%>%
+  #3rd layer
+  layer_dense(units = 30,
+              kernel_initializer = "uniform",
+              activation = "relu")%>%
+  #dropout
+  layer_dropout(rate = 0.1)%>%
+  #out layer
+  layer_dense(units = 1,
+              kernel_initializer = 'uniform',
+              activation = "sigmoid") %>%
+  #compile
+  compile(optimizer = "adam",
+          loss = "binary_crossentropy",
+          metrics = c("accuracy"))
+
+history_2 <- fit(object = ann2, x = as.matrix(x_train), y = y_train, batch_size = 50, epochs = 15, validation_split = 0.2)
+```
+One more hidden layer is added here. The hyperparameters tuning process is basically the same.
+```{r}
+plot(history_2)
+```
+
+making predictions and model evaluation
+```{r}
+y_pred_class_2 <- predict_classes(object = ann2, x = as.matrix(x_val)) %>%
+  as.vector
+y_pred_prob_2 <- predict_proba(object = ann2, x = as.matrix(x_val)) %>%
+  as.vector
+
+#evaluation
+keras_tbl_2 <- tibble(truth = as.factor(y_val),
+                      estimate = as.factor(y_pred_class_2),
+                      class_prob = y_pred_prob_2)
+
+options(yardstick.event_first = FALSE)
+#confusion matrix
+keras_tbl_2 %>% conf_mat(truth,estimate)
+#accuracy
+keras_tbl_2 %>% metrics(truth,estimate)
+#AUC
+keras_tbl_2 %>% roc_auc(truth,class_prob)
+#ROC
+keras_tbl_2 %>% roc(truth,class_prob) %>% plot()
+#Precision and Recall
+keras_tbl_2 %>% precision(truth,estimate)
+keras_tbl_2 %>% recall(truth,estimate)
+```
+The accuracy and kappa of ANN2 is higher than previous models, but interestingly, the specificity and AUC are lower than ANN1, which is different from my anticipation. It might due to hyperparameters tuning. Employing grid search may help solve the problem
+
+**decision tree model**
+```{r}
+dt_model <- train(Disease ~ .,data = log_train, method = "rpart",metric = "Accuracy", tuneLength = 8,
+                  control = rpart.control(minsplit = 50, minbucket = 20, maxdepth = 5))
+dt_model_postprune <- prune(dt_model$finalModel, cp =0.2)
+fancyRpartPlot(dt_model$finalModel)
+dt_pred <- predict(dt_model,newdata = log_val)
+confusionMatrix(dt_pred,log_val$Disease)
+```
+According to the plot of the tree, the two most important features are HPressure and Age, which is consistent with the findings from the logistic regression and correlation matrix. The accuracy, kappa, specificity, and auc are on the same scale but in the low range comparing to other models mentioned above.
+
+Decision Tree Roc&Auc
+```{r}
+dt_pred_prob <- predict(dt_model,newdata = log_val,type = "prob")
+dt_roc_curve <- roc(log_val$Disease,dt_pred_prob$`1`)
+plot(dt_roc_curve)
+auc(dt_roc_curve)
+```
+
+**predict the test dataset**
+Data Cleaning
+```{r}
+#read test data to a new dataframe
+testdf <- read_csv(file = "Disease Prediction Testing(1).csv")
+#data cleaning 
+#check if there is any missing value in the data
+test_NA_table <- sort(sapply(testdf, function(x) sum(is.na(x))))
+sum(test_NA_table)
+#no missing value found
+
+#change column names for simplicity
+colnames(testdf)[6] <- "HPressure"
+colnames(testdf)[7] <- "LPressure"
+
+#winsorize the data to get rid of the extreme values
+testdf$HPressure <- Winsorize(testdf$HPressure, probs = c(0.02,0.98))
+testdf$LPressure <- Winsorize(testdf$LPressure, probs = c(0.02,0.98))
+testdf$Height <- Winsorize(testdf$Height, probs = c(0.005,0.995))
+testdf$Weight <- Winsorize(testdf$Weight, probs = c(0.005,0.995))
+```
+
+#check if there exists any rows with low pressure > hgih pressure
+```{r}
+#if yes, inter-change low pressure and high pressure
+sum(testdf$HPressure < testdf$LPressure)
+#30 cases found
+temp_min <- pmin(testdf$HPressure,testdf$LPressure)
+testdf$HPressure <- pmax(testdf$HPressure,testdf$LPressure)
+testdf$LPressure <- temp_min
+```
+
+Use logistic regression to predict
+```{r}
+#pre-processing
+cat_col = c('Gender','Cholesterol','Glucose','Smoke','Alcohol','Exercise')
+tempdf <- subset(testdf, select = -c(ID))
+tempdf[cat_col] <- lapply(tempdf[cat_col], as.factor)
+#predict
+log_result <- predict(log_model, newdata = tempdf)
+```
+
+use decision tree to predict
+```{r}
+dt_result <- predict(dt_model, newdata = tempdf)
+```
+
+use ANNto predict
+```{r}
+# the disease column is created just for the convenience of standarlizing and making dummy variables
+tempdf[,"Disease"] <- NA
+ann_tempdf <- bake(rec_obj, new_data = tempdf) %>% select(-Disease)
+ann0_result <- predict_classes(object = ann0, x = as.matrix(ann_tempdf)) %>%
+  as.vector
+ann1_result <- predict_classes(object = ann1, x = as.matrix(ann_tempdf)) %>%
+  as.vector
+ann2_result <- predict_classes(object = ann2, x = as.matrix(ann_tempdf)) %>%
+  as.vector
+```
+
+create the prediction result dataframe and write to a file
+```{r}
+prediction <- subset(testdf, select = 1)
+prediction['DT'] <- dt_result
+prediction['LR'] <- log_result
+prediction['ANN0'] <- ann0_result
+prediction['ANN1'] <- ann1_result
+prediction['ANN2'] <- ann2_result
+head(prediction,5)
+#output the dataframe to a .csv file
+write.csv(prediction,'prediction.csv')
+```
+
+**Linear-SVM, Logistic Regression, and ANN0 Model Comparision**
+Puting accuracy, Kappa, and specificity into consideration (Linear SVM does not have AUC), the ANN-0 model performs the best. But in general, all three models have similar performances, and it is theoretically reasonable. Because the linear SVM model and Logistic Regression model are very similar, except the loss functions. Linear-SVM minimizes hinge loss while the logistics regression minimizes the logistic loss. Then the neural network model with no hidden layer is equivalent to a linear regression model if no activation function is applied. Even with an activation function, which makes the model performs as a non-linear regression model, the performance is quite similar with the generalized linear model, i.e. our logistic regression model. 
+
+**Conclusion**
+Up to now, all supervised learning algorithms we leaned from lectures are applied to this dataset. Among all the models, ANN-2 performs the best in terms of model performance metrics and time efficiency. The only problem I found about ANN-2 is that the specificity and AUC are lower than those of ANN-1. This issue might be due to the hyperparameter tuning. 

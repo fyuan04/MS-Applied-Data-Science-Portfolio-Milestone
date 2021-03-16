@@ -1,0 +1,5 @@
+This project aims at building models to detect sarcasm used in news headlines. By doing so, 
+we can classify news headlines into two categories based on if they are sarcastic or not. 
+Please note that the project codes are divided into two parts, the first notebook contains 
+topic modeling and word clouds built. The second includes the machine learning models we built
+and model evaluation. Python is required to run both notebooks.

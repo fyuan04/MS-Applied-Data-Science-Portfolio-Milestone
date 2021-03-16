@@ -1,4 +1,4 @@
-The purpose of this project is to predict if the customers are interested in purchasing the newly developed product, <br>
-vehicle insurance from the company based on customers’ personal information and vehicle-related data. <br>
-The project code is written in Python and the model training is done with the PySpark package. If you do not have <br>
+The purpose of this project is to predict if the customers are interested in purchasing the newly developed product,
+vehicle insurance from the company based on customers’ personal information and vehicle-related data.
+The project code is written in Python and the model training is done with the PySpark package. If you do not have 
 PySpark installed locally, consider cloud computing services such as google Colab or DataBricks
